@@ -1,0 +1,6 @@
+{
+  "tropicana": "https://27323.live.streamtheworld.com/TR_BARRANQUILLAAAC.aac?csegid=2000&gdpr=1&gdpr_consent=false&dist=tropicana_co-web-live_streaming_play&tdsdk=js-2.9&swm=true&pname=TDSdk&pversion=2.9&banners=none&burst-time=15&sbmid=34b70f67-1a56-48ec-9134-d8338da1b7a3",
+  "olimpica" : "https://24413.live.streamtheworld.com/OLP_BARRANQUILLAAAC.aac?dist=oro_web",
+  "mix": "https://playerservices.streamtheworld.com/api/livestream-redirect/MIX_BARRANQUILLAAAC.aac?dist=oro_web",
+  "granlobo": "https://radio.elgranlobo.com/listen/el_gran_lobo/radio.mp3"
+}
