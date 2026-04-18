@@ -193,22 +193,9 @@ module.exports = {
             });
         }
 
-        // Si es URL de SoundCloud y ya se está reproduciendo en este canal, encolar en vez de cortar.
-        if (soundCloudUrl && isActivePlayback) {
-            const queue = getSoundCloudQueue(interaction.guildId);
-            queue.push(soundCloudUrl);
-            const queueEmbed = createSoundCloudEmbed('🔜 Próxima en la cola', queue.length);
-            const controlsRow = createSoundCloudControlsRow(interaction.guildId);
-
-            return interaction.editReply({
-                embeds: [queueEmbed],
-                components: [controlsRow],
-            });
-        }
-
-        // Si está sonando y pidieron emisora, detener para cambiar.
-        if (!soundCloudUrl && isActivePlayback) {
-            currentState.player.stop();
+        // Siempre cortar de forma limpia al cambiar de emisora/música.
+        if (isActivePlayback) {
+            stopPlayback(interaction.guildId);
             soundCloudQueues.delete(interaction.guildId);
         }
 

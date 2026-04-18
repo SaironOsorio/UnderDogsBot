@@ -4,6 +4,7 @@ const { DefaultExtractors } = require('@discord-player/extractor');
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
+const { checkRateLimit } = require('./utils/rateLimiter');
 
 function loadVoiceManager() {
     const candidates = [
@@ -26,6 +27,106 @@ function loadVoiceManager() {
 }
 
 const { pausePlayback, resumePlayback, stopPlayback, getVoiceConnection } = loadVoiceManager();
+
+const RATE_LIMITS = {
+    commandUser: { limit: 8, windowMs: 15_000 },
+    commandGuild: { limit: 30, windowMs: 15_000 },
+    radioUser: { limit: 5, windowMs: 20_000 },
+    radioGuild: { limit: 12, windowMs: 20_000 },
+    buttonUser: { limit: 10, windowMs: 10_000 },
+};
+
+const AUTO_DISCONNECT_MS = Number.parseInt(process.env.AUTO_DISCONNECT_MS || '90000', 10);
+const idleDisconnectTimers = new Map();
+
+function formatRateLimitMessage(retryAfterMs) {
+    const seconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
+    return `⏳ Demasiadas solicitudes. Espera ${seconds}s e inténtalo de nuevo.`;
+}
+
+function getHumanListenersForInteraction(interaction) {
+    const voiceState = getVoiceConnection(interaction.guildId);
+    const channelId = voiceState?.connection?.joinConfig?.channelId;
+    const guild = interaction.guild;
+
+    if (!guild || !channelId) {
+        return 0;
+    }
+
+    const channel = guild.channels.cache.get(channelId);
+    if (!channel?.members) {
+        return 0;
+    }
+
+    return channel.members.filter(member => !member.user?.bot).size;
+}
+
+function scalePolicyByTraffic(basePolicy, humanListeners) {
+    if (humanListeners >= 8) {
+        return { limit: Math.ceil(basePolicy.limit * 2.2), windowMs: basePolicy.windowMs };
+    }
+
+    if (humanListeners >= 4) {
+        return { limit: Math.ceil(basePolicy.limit * 1.6), windowMs: basePolicy.windowMs };
+    }
+
+    return basePolicy;
+}
+
+function clearIdleDisconnectTimer(guildId) {
+    const timer = idleDisconnectTimers.get(guildId);
+    if (timer) {
+        clearTimeout(timer);
+        idleDisconnectTimers.delete(guildId);
+    }
+}
+
+function scheduleIdleDisconnect(guildId) {
+    if (!guildId) {
+        return;
+    }
+
+    const voiceState = getVoiceConnection(guildId);
+    const channelId = voiceState?.connection?.joinConfig?.channelId;
+
+    if (!channelId) {
+        clearIdleDisconnectTimer(guildId);
+        return;
+    }
+
+    const guild = client.guilds.cache.get(guildId);
+    const channel = guild?.channels?.cache?.get(channelId);
+    const humanCount = channel?.members ? channel.members.filter(member => !member.user?.bot).size : 0;
+
+    if (humanCount > 0) {
+        clearIdleDisconnectTimer(guildId);
+        return;
+    }
+
+    if (idleDisconnectTimers.has(guildId)) {
+        return;
+    }
+
+    const timer = setTimeout(() => {
+        idleDisconnectTimers.delete(guildId);
+
+        const currentVoiceState = getVoiceConnection(guildId);
+        const currentChannelId = currentVoiceState?.connection?.joinConfig?.channelId;
+        const currentGuild = client.guilds.cache.get(guildId);
+        const currentChannel = currentGuild?.channels?.cache?.get(currentChannelId);
+        const currentHumanCount = currentChannel?.members
+            ? currentChannel.members.filter(member => !member.user?.bot).size
+            : 0;
+
+        if (currentVoiceState && currentHumanCount === 0) {
+            stopPlayback(guildId);
+            console.log(`[${guildId}] Desconectado por inactividad: no había usuarios en voice.`);
+        }
+    }, AUTO_DISCONNECT_MS);
+
+    timer.unref();
+    idleDisconnectTimers.set(guildId, timer);
+}
 
 // Inicializar tweetnacl para encriptación
 try {
@@ -52,6 +153,7 @@ async function initializeLibsodium() {
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
+const COMMAND_SCOPE = (process.env.COMMAND_SCOPE || (GUILD_ID ? 'guild' : 'global')).toLowerCase();
 
 if (!TOKEN) {
     throw new Error('Token no configurado. Revisa el archivo .env');
@@ -159,12 +261,17 @@ for (const file of commandFiles) {
 async function registerSlashCommands() {
     const rest = new REST({ version: '10' }).setToken(TOKEN);
     const globalRoute = Routes.applicationCommands(CLIENT_ID);
+    const guildRoute = GUILD_ID ? Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID) : null;
 
-    if (GUILD_ID) {
-        const guildRoute = Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID);
+    if (COMMAND_SCOPE === 'guild' && guildRoute) {
         try {
             await rest.put(guildRoute, { body: commands });
             console.log(`✅ Slash commands registrados en guild ${GUILD_ID}`);
+
+            // Evita comandos duplicados en el cliente de Discord si existían globales.
+            await rest.put(globalRoute, { body: [] });
+            console.log('🧹 Slash commands globales limpiados para evitar duplicados con guild.');
+            return;
         } catch (err) {
             if (err?.status === 403 || err?.code === 50001) {
                 console.warn('⚠️ Sin acceso para registrar comandos en el guild. Intento global...');
@@ -174,10 +281,18 @@ async function registerSlashCommands() {
         }
     }
 
-    // Mantener también el registro global sincronizado para evitar comandos desactualizados
+    if (COMMAND_SCOPE === 'guild' && !guildRoute) {
+        console.warn('⚠️ COMMAND_SCOPE=guild pero no hay DISCORD_GUILD_ID. Uso registro global.');
+    }
+
     try {
         await rest.put(globalRoute, { body: commands });
-        console.log('✅ Slash commands registrados (global). Propagación puede tardar hasta 1 hora.');
+        console.log('✅ Slash commands registrados (global).');
+
+        if (COMMAND_SCOPE === 'both' && guildRoute) {
+            await rest.put(guildRoute, { body: commands });
+            console.log(`✅ Slash commands también registrados en guild ${GUILD_ID} (modo both).`);
+        }
     } catch (err) {
         console.error('Error registrando slash commands (global):', err);
     }
@@ -210,6 +325,16 @@ client.once('ready', () => {
     console.log('✅ Player listo. Las colas se crearán al reproducir.');
 });
 
+client.on('voiceStateUpdate', (oldState, newState) => {
+    const guildId = oldState.guild?.id || newState.guild?.id;
+    if (!guildId) {
+        return;
+    }
+
+    // Cualquier cambio de membresía en voice puede activar o cancelar desconexión por inactividad.
+    scheduleIdleDisconnect(guildId);
+});
+
 // Manejar interacciones (slash commands y botones)
 client.on('interactionCreate', async (interaction) => {
     // Manejar slash commands
@@ -218,6 +343,47 @@ client.on('interactionCreate', async (interaction) => {
 
         if (!command) {
             console.error(`Comando no encontrado: ${interaction.commandName}`);
+            return;
+        }
+
+        const guildKey = interaction.guildId || 'dm';
+        const userId = interaction.user?.id || 'unknown';
+        const isRadioCommand = interaction.commandName === 'radio';
+        const baseUserPolicy = isRadioCommand ? RATE_LIMITS.radioUser : RATE_LIMITS.commandUser;
+        const baseGuildPolicy = isRadioCommand ? RATE_LIMITS.radioGuild : RATE_LIMITS.commandGuild;
+        const humanListeners = getHumanListenersForInteraction(interaction);
+        const userPolicy = scalePolicyByTraffic(baseUserPolicy, humanListeners);
+        const guildPolicy = scalePolicyByTraffic(baseGuildPolicy, humanListeners);
+
+        const userLimit = checkRateLimit(
+            `cmd:user:${interaction.commandName}:${guildKey}:${userId}`,
+            userPolicy.limit,
+            userPolicy.windowMs
+        );
+
+        if (userLimit.limited) {
+            const reply = { content: formatRateLimitMessage(userLimit.retryAfterMs), flags: 64 };
+            if (interaction.replied || interaction.deferred) {
+                await interaction.followUp(reply);
+            } else {
+                await interaction.reply(reply);
+            }
+            return;
+        }
+
+        const guildLimit = checkRateLimit(
+            `cmd:guild:${interaction.commandName}:${guildKey}`,
+            guildPolicy.limit,
+            guildPolicy.windowMs
+        );
+
+        if (guildLimit.limited) {
+            const reply = { content: formatRateLimitMessage(guildLimit.retryAfterMs), flags: 64 };
+            if (interaction.replied || interaction.deferred) {
+                await interaction.followUp(reply);
+            } else {
+                await interaction.reply(reply);
+            }
             return;
         }
 
@@ -244,6 +410,17 @@ client.on('interactionCreate', async (interaction) => {
         const customId = interaction.customId;
 
         if (!customId.startsWith('sc_')) {
+            return;
+        }
+
+        const buttonLimit = checkRateLimit(
+            `btn:${interaction.guildId || 'dm'}:${interaction.user?.id || 'unknown'}`,
+            RATE_LIMITS.buttonUser.limit,
+            RATE_LIMITS.buttonUser.windowMs
+        );
+
+        if (buttonLimit.limited) {
+            await interaction.reply({ content: formatRateLimitMessage(buttonLimit.retryAfterMs), flags: 64 });
             return;
         }
 

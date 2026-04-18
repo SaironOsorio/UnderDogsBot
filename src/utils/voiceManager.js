@@ -24,6 +24,18 @@ const FFMPEG_CHANNELS = getEnvInt('FFMPEG_CHANNELS', 2);
 
 const voiceConnections = new Map();
 
+function killAudioProcess(audioProcess) {
+    if (!audioProcess || audioProcess.killed) {
+        return;
+    }
+
+    try {
+        audioProcess.kill('SIGKILL');
+    } catch (error) {
+        console.warn('No se pudo finalizar proceso de audio:', error.message);
+    }
+}
+
 /**
  * Obtiene la conexión de voz para un servidor
  */
@@ -72,19 +84,55 @@ async function connectToVoiceChannel(channel) {
     }
 }
 
-function createPlayerWithResource(connection, resource, guildId) {
+function createPlayerWithResource(connection, resource, guildId, options = {}) {
+    const previousVoiceState = voiceConnections.get(guildId);
+
+    if (previousVoiceState?.audioProcess && previousVoiceState.audioProcess !== options.audioProcess) {
+        killAudioProcess(previousVoiceState.audioProcess);
+    }
+
+    if (previousVoiceState?.player) {
+        try {
+            previousVoiceState.player.stop(true);
+        } catch (error) {
+            console.warn('No se pudo detener el reproductor previo:', error.message);
+        }
+    }
+
+    if (previousVoiceState?.connection && previousVoiceState.connection !== connection) {
+        try {
+            previousVoiceState.connection.destroy();
+        } catch (error) {
+            console.warn('No se pudo destruir la conexión previa:', error.message);
+        }
+    }
+
     const player = createAudioPlayer();
 
     player.play(resource);
     connection.subscribe(player);
-    setVoiceConnection(guildId, { connection, player });
+    setVoiceConnection(guildId, { connection, player, audioProcess: options.audioProcess || null });
 
     player.on('error', (err) => {
         console.error('Error en reproductor de voz:', err.message);
+
+        const voiceState = voiceConnections.get(guildId);
+        if (voiceState?.audioProcess) {
+            killAudioProcess(voiceState.audioProcess);
+            voiceState.audioProcess = null;
+        }
     });
 
     player.on('stateChange', (oldState, newState) => {
         console.log(`[${guildId}] Player state: ${oldState.status} -> ${newState.status}`);
+
+        if (newState.status === AudioPlayerStatus.Idle) {
+            const voiceState = voiceConnections.get(guildId);
+            if (voiceState?.audioProcess) {
+                killAudioProcess(voiceState.audioProcess);
+                voiceState.audioProcess = null;
+            }
+        }
     });
 
     return true;
@@ -153,7 +201,7 @@ async function playAudio(connection, streamUrl, guildId, metadata = {}) {
                     return false;
                 }
 
-                return createPlayerWithResource(connection, resource, guildId);
+                return createPlayerWithResource(connection, resource, guildId, { audioProcess: ffmpeg });
                 
             } catch (err) {
                 console.error('❌ Error procesando HTTP stream:', err.message);
@@ -206,7 +254,12 @@ function stopPlayback(guildId) {
     if (!voiceState) return false;
 
     try {
-        voiceState.player.stop();
+        if (voiceState.audioProcess) {
+            killAudioProcess(voiceState.audioProcess);
+            voiceState.audioProcess = null;
+        }
+
+        voiceState.player.stop(true);
         voiceState.connection.destroy();
         deleteVoiceConnection(guildId);
         return true;
