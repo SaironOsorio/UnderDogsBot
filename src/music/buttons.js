@@ -33,6 +33,9 @@ async function handleMusicButton(interaction) {
             queue.togglePause();
             break;
         case 'skip':
+            if (queue.current.isLive && !queue.tracks.length) {
+                return interaction.reply({ embeds: [ui.errorEmbed('No hay nada en cola después de la emisora.')], flags: MessageFlags.Ephemeral });
+            }
             notice = `⏭️ ${user} saltó **${queue.current.title}**`;
             queue.skip();
             break;
@@ -42,6 +45,7 @@ async function handleMusicButton(interaction) {
             queue.destroy('stop');
             return;
         case 'loop':
+            if (queue.current.isLive) return interaction.deferUpdate();
             queue.cycleLoop();
             break;
         case 'shuffle':

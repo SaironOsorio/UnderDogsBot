@@ -133,6 +133,7 @@ class GuildQueue extends EventEmitter {
                     this.pipeline = pipeline;
                     this.resource = resource;
                     this.current = track;
+                    track.startedAt = Date.now();
                     this.player.play(resource);
                     this.emit('trackStart', track);
                     return;

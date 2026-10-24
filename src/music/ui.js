@@ -16,32 +16,42 @@ function requesterText(track) {
     return track.requestedBy ? `<@${track.requestedBy.id}>` : 'Desconocido';
 }
 
+function botAvatar(queue) {
+    return queue?.guild?.client?.user?.displayAvatarURL?.() ?? null;
+}
+
 function nowPlayingEmbed(queue) {
     const track = queue.current;
     if (!track) return idleEmbed('No hay nada reproduciéndose.');
 
     const info = sourceInfo(track.source);
-    const header = queue.isPaused ? 'En pausa' : 'Reproduciendo ahora';
+    const isRadio = track.source === 'radio';
+    const header = queue.isPaused ? 'En pausa' : isRadio ? 'Radio en vivo' : `Reproduciendo · ${info.label}`;
     const elapsed = queue.elapsedMs;
     const timeline = track.isLive
         ? '🔴 **EN VIVO**'
         : `${progressBar(elapsed, track.duration)}\n\`${formatDuration(elapsed)} / ${trackDuration(track)}\``;
 
+    const fields = [];
+    if (!isRadio) fields.push({ name: '🎤 Artista', value: cleanTitle(track.author || 'Desconocido', 60), inline: true });
+    if (queue.voiceChannelId) fields.push({ name: '🔊 Canal', value: `<#${queue.voiceChannelId}>`, inline: true });
+    fields.push({ name: '👤 Pedido por', value: requesterText(track), inline: true });
+    fields.push({ name: '🔈 Volumen', value: `${queue.volume}%`, inline: true });
+    if (!track.isLive) fields.push({ name: '🔁 Repetir', value: LOOP_LABELS[queue.loop], inline: true });
+    fields.push({ name: '📋 En cola', value: queueSummary(queue), inline: true });
+
+    const avatar = botAvatar(queue);
     const embed = new EmbedBuilder()
         .setColor(queue.isPaused ? COLORS.idle : info.color)
-        .setAuthor({ name: `${header} · ${info.label}` })
+        .setAuthor({ name: header, iconURL: avatar || undefined })
         .setDescription(`### ${trackLink(track, 80)}\n${timeline}`)
-        .addFields(
-            { name: 'Artista', value: cleanTitle(track.author || 'Desconocido', 60), inline: true },
-            { name: 'Pedido por', value: requesterText(track), inline: true },
-            { name: 'Volumen', value: `${queue.volume}%`, inline: true },
-            { name: 'Repetir', value: LOOP_LABELS[queue.loop], inline: true },
-            { name: 'En cola', value: queueSummary(queue), inline: true },
-        );
+        .addFields(fields)
+        .setTimestamp(track.startedAt || Date.now());
 
-    if (track.thumbnail) embed.setThumbnail(track.thumbnail);
+    const thumbnail = track.thumbnail || avatar;
+    if (thumbnail) embed.setThumbnail(thumbnail);
     const next = queue.tracks[0];
-    embed.setFooter({ text: next ? `Siguiente: ${next.title}`.slice(0, 200) : 'No hay más canciones en cola' });
+    embed.setFooter({ text: next ? `Siguiente: ${next.title}`.slice(0, 200) : 'Usa los botones para controlar la reproducción' });
     return embed;
 }
 
@@ -51,62 +61,42 @@ function queueSummary(queue) {
     return `${queue.tracks.length} · ${duration ? formatDuration(duration) : '--:--'}`;
 }
 
+function button(id, emoji, style, disabled, label) {
+    const built = new ButtonBuilder().setCustomId(id).setEmoji(emoji).setStyle(style).setDisabled(disabled);
+    return label ? built.setLabel(label) : built;
+}
+
 function controlRows(queue, disabled = false) {
     const paused = queue?.isPaused;
     const loop = queue?.loop || 'off';
+    const live = Boolean(queue?.current?.isLive);
+    const hasNext = Boolean(queue?.tracks?.length);
 
-    const playback = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId('music:toggle')
-            .setEmoji(paused ? '▶️' : '⏸️')
-            .setLabel(paused ? 'Reanudar' : 'Pausar')
-            .setStyle(paused ? ButtonStyle.Success : ButtonStyle.Primary)
-            .setDisabled(disabled),
-        new ButtonBuilder()
-            .setCustomId('music:skip')
-            .setEmoji('⏭️')
-            .setLabel('Saltar')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(disabled),
-        new ButtonBuilder()
-            .setCustomId('music:stop')
-            .setEmoji('⏹️')
-            .setLabel('Detener')
-            .setStyle(ButtonStyle.Danger)
-            .setDisabled(disabled),
+    const playback = [
+        button('music:toggle', paused ? '▶️' : '⏸️', paused ? ButtonStyle.Success : ButtonStyle.Primary, disabled, paused ? 'Reanudar' : 'Pausar'),
+    ];
+    if (!live || hasNext) {
+        playback.push(button('music:skip', '⏭️', ButtonStyle.Secondary, disabled, live ? 'Volver a la cola' : 'Saltar'));
+    }
+    playback.push(button('music:stop', '⏹️', ButtonStyle.Danger, disabled, 'Detener'));
+
+    const extras = [];
+    if (!live) {
+        extras.push(
+            button('music:loop', loop === 'track' ? '🔂' : '🔁', loop === 'off' ? ButtonStyle.Secondary : ButtonStyle.Success, disabled, `Repetir: ${LOOP_LABELS[loop]}`),
+            button('music:shuffle', '🔀', ButtonStyle.Secondary, disabled),
+        );
+    }
+    extras.push(
+        button('music:voldown', '🔉', ButtonStyle.Secondary, disabled),
+        button('music:volup', '🔊', ButtonStyle.Secondary, disabled),
+        button('music:queue', '📜', ButtonStyle.Secondary, disabled, 'Cola'),
     );
 
-    const extras = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId('music:loop')
-            .setEmoji(loop === 'track' ? '🔂' : '🔁')
-            .setLabel(`Repetir: ${LOOP_LABELS[loop]}`)
-            .setStyle(loop === 'off' ? ButtonStyle.Secondary : ButtonStyle.Success)
-            .setDisabled(disabled),
-        new ButtonBuilder()
-            .setCustomId('music:shuffle')
-            .setEmoji('🔀')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(disabled),
-        new ButtonBuilder()
-            .setCustomId('music:voldown')
-            .setEmoji('🔉')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(disabled),
-        new ButtonBuilder()
-            .setCustomId('music:volup')
-            .setEmoji('🔊')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(disabled),
-        new ButtonBuilder()
-            .setCustomId('music:queue')
-            .setEmoji('📜')
-            .setLabel('Cola')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(disabled),
-    );
-
-    return [playback, extras];
+    return [
+        new ActionRowBuilder().addComponents(playback),
+        new ActionRowBuilder().addComponents(extras),
+    ];
 }
 
 function queueEmbed(queue, page = 1) {
