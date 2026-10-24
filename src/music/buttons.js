@@ -2,6 +2,7 @@ const { MessageFlags } = require('discord.js');
 const manager = require('./manager');
 const ui = require('./ui');
 const { LOOP_LABELS } = require('./format');
+const { presetLabel } = require('./equalizer');
 const { requireControl } = require('./guards');
 
 const VOLUME_STEP = 10;
@@ -44,6 +45,10 @@ async function handleMusicButton(interaction) {
             await interaction.update({ embeds: [ui.finishedEmbed(`⏹️ ${user} detuvo la música.`)], components: [] });
             queue.destroy('stop');
             return;
+        case 'eq':
+            queue.setEq(interaction.values?.[0]);
+            notice = `🎛️ ${user} cambió el sonido a **${presetLabel(queue.eq)}**`;
+            break;
         case 'loop':
             if (queue.current.isLive) return interaction.deferUpdate();
             queue.cycleLoop();

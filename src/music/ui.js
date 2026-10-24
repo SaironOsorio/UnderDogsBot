@@ -1,4 +1,5 @@
-const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } = require('discord.js');
+const { PRESETS, presetLabel } = require('./equalizer');
 const {
     LOOP_LABELS,
     sourceInfo,
@@ -37,6 +38,7 @@ function nowPlayingEmbed(queue) {
     if (queue.voiceChannelId) fields.push({ name: '🔊 Canal', value: `<#${queue.voiceChannelId}>`, inline: true });
     fields.push({ name: '👤 Pedido por', value: requesterText(track), inline: true });
     fields.push({ name: '🔈 Volumen', value: `${queue.volume}%`, inline: true });
+    fields.push({ name: '🎛️ Sonido', value: presetLabel(queue.eq), inline: true });
     if (!track.isLive) fields.push({ name: '🔁 Repetir', value: LOOP_LABELS[queue.loop], inline: true });
     fields.push({ name: '📋 En cola', value: queueSummary(queue), inline: true });
 
@@ -96,7 +98,23 @@ function controlRows(queue, disabled = false) {
     return [
         new ActionRowBuilder().addComponents(playback),
         new ActionRowBuilder().addComponents(extras),
+        eqRow(queue, disabled),
     ];
+}
+
+function eqRow(queue, disabled = false) {
+    const menu = new StringSelectMenuBuilder()
+        .setCustomId('music:eq')
+        .setPlaceholder('Modo de sonido')
+        .setDisabled(disabled)
+        .addOptions(Object.entries(PRESETS).map(([value, preset]) => ({
+            label: preset.label,
+            value,
+            description: preset.description.slice(0, 100),
+            emoji: preset.emoji,
+            default: queue?.eq === value,
+        })));
+    return new ActionRowBuilder().addComponents(menu);
 }
 
 function queueEmbed(queue, page = 1) {

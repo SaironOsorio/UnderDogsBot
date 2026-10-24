@@ -186,7 +186,7 @@ client.on('interactionCreate', async (interaction) => {
         return;
     }
 
-    if (interaction.isButton()) {
+    if (interaction.isButton() || interaction.isStringSelectMenu()) {
         if (!interaction.customId.startsWith('music:') && !interaction.customId.startsWith('queue:')) return;
 
         const check = checkRateLimit(

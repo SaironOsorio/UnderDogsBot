@@ -11,6 +11,8 @@ const {
 } = require('@discordjs/voice');
 const { createPipeline } = require('./audio');
 const { ensurePlayable } = require('./resolver');
+const { PRESETS, DEFAULT_PRESET } = require('./equalizer');
+const settings = require('../utils/settings');
 
 const LOOP_MODES = ['off', 'track', 'queue'];
 const MAX_VOLUME = 150;
@@ -27,6 +29,10 @@ class GuildQueue extends EventEmitter {
         this.current = null;
         this.loop = 'off';
         this.volume = DEFAULT_VOLUME;
+        this.eq = settings.get(guild.id, 'eq', DEFAULT_PRESET);
+        if (!PRESETS[this.eq]) this.eq = DEFAULT_PRESET;
+        this.eqPending = false;
+        this.seekOffsetMs = 0;
         this.connection = null;
         this.resource = null;
         this.pipeline = null;
@@ -53,7 +59,7 @@ class GuildQueue extends EventEmitter {
     }
 
     get elapsedMs() {
-        return this.resource?.playbackDuration ?? 0;
+        return this.resource ? this.seekOffsetMs + this.resource.playbackDuration : 0;
     }
 
     get pendingDurationMs() {
@@ -122,19 +128,9 @@ class GuildQueue extends EventEmitter {
                     if (this.destroyed) return;
 
                     this.killPipeline();
-                    const pipeline = createPipeline(track);
-                    const resource = createAudioResource(pipeline.output, {
-                        inputType: StreamType.Raw,
-                        inlineVolume: true,
-                        metadata: track,
-                    });
-                    resource.volume.setVolume(this.volume / 100);
-
-                    this.pipeline = pipeline;
-                    this.resource = resource;
                     this.current = track;
                     track.startedAt = Date.now();
-                    this.player.play(resource);
+                    this.playResource(track, 0);
                     this.emit('trackStart', track);
                     return;
                 } catch (error) {
@@ -147,9 +143,50 @@ class GuildQueue extends EventEmitter {
         }
     }
 
+    playResource(track, seekMs) {
+        const previous = this.pipeline;
+        const pipeline = createPipeline(track, { eq: this.eq, seekMs });
+        const resource = createAudioResource(pipeline.output, {
+            inputType: StreamType.Raw,
+            inlineVolume: true,
+            metadata: track,
+        });
+        resource.volume.setVolume(this.volume / 100);
+
+        this.pipeline = pipeline;
+        this.resource = resource;
+        this.seekOffsetMs = seekMs;
+        this.eqPending = false;
+        this.player.play(resource);
+        if (previous && previous !== pipeline) previous.kill();
+    }
+
+    restartCurrent() {
+        const track = this.current;
+        if (!track) return false;
+        const position = track.isLive ? 0 : this.elapsedMs;
+        if (track.duration && position >= track.duration - 1500) return false;
+        this.playResource(track, position);
+        return true;
+    }
+
+    setEq(name) {
+        if (!PRESETS[name]) return this.eq;
+        const changed = name !== this.eq;
+        this.eq = name;
+        settings.set(this.guildId, 'eq', name);
+        if (changed && this.current) {
+            if (this.isPaused) this.eqPending = true;
+            else this.restartCurrent();
+        }
+        this.emit('stateUpdate');
+        return this.eq;
+    }
+
     handleIdle() {
         const finished = this.current;
         const playedMs = this.resource?.playbackDuration ?? 0;
+        this.seekOffsetMs = 0;
         this.killPipeline();
         this.resource = null;
         this.current = null;
@@ -198,6 +235,11 @@ class GuildQueue extends EventEmitter {
 
     resume() {
         if (!this.current || !this.isPaused) return false;
+        if (this.eqPending) {
+            this.restartCurrent();
+            this.emit('stateUpdate');
+            return true;
+        }
         const resumed = this.player.unpause();
         if (resumed) this.emit('stateUpdate');
         return resumed;

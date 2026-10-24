@@ -2,7 +2,7 @@ const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 
 const SECTIONS = [
     ['Reproducir', ['play', 'radio', 'emisoras']],
-    ['Controles', ['pause', 'resume', 'skip', 'stop', 'volume', 'loop']],
+    ['Controles', ['pause', 'resume', 'skip', 'stop', 'volume', 'eq', 'loop']],
     ['Cola', ['queue', 'nowplaying', 'shuffle', 'remove', 'move', 'clear']],
 ];
 
