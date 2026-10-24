@@ -1,19 +1,16 @@
-const { resumePlayback } = require('../utils/voiceManager');
+const { SlashCommandBuilder } = require('discord.js');
+const ui = require('../music/ui');
+const { requireControl } = require('../music/guards');
 
 module.exports = {
-    name: 'resume',
-    description: 'Reanuda la reproducción',
-    
+    data: new SlashCommandBuilder().setName('resume').setDescription('Reanuda la música'),
+
     async execute(interaction) {
-        const success = resumePlayback(interaction.guildId);
-
-        if (!success) {
-            return interaction.reply({ 
-                content: '❌ No hay nada pausado.', 
-                flags: 64 
-            });
+        const queue = await requireControl(interaction);
+        if (!queue) return;
+        if (!queue.resume()) {
+            return interaction.reply({ embeds: [ui.errorEmbed('La música no está pausada.')], flags: 64 });
         }
-
-        await interaction.reply('▶️ Reanudado.');
+        await interaction.reply({ embeds: [ui.successEmbed('▶️ Seguimos.')] });
     },
 };
