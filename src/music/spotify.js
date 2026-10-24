@@ -82,27 +82,17 @@ async function collectPages(firstPage, mapItem) {
     return items;
 }
 
+const API_TYPES = new Set(['track', 'album']);
+
 async function resolveWithApi({ type, id }) {
     if (type === 'track') {
         const track = await api(`/tracks/${id}`);
         return { tracks: [apiTrack(track)].filter(Boolean), playlist: null };
     }
-    if (type === 'album') {
-        const album = await api(`/albums/${id}`);
-        const image = album.images?.[0]?.url;
-        const tracks = await collectPages(album.tracks, (item) => apiTrack({ ...item, album }, image));
-        return { tracks, playlist: { title: album.name, url: album.external_urls?.spotify, thumbnail: image } };
-    }
-    if (type === 'playlist') {
-        const playlist = await api(`/playlists/${id}`);
-        const image = playlist.images?.[0]?.url;
-        const tracks = await collectPages(playlist.tracks, (item) => apiTrack(item.track, image));
-        return { tracks, playlist: { title: playlist.name, url: playlist.external_urls?.spotify, thumbnail: image } };
-    }
-    const artist = await api(`/artists/${id}`);
-    const top = await api(`/artists/${id}/top-tracks?market=${process.env.SPOTIFY_MARKET || 'CO'}`);
-    const tracks = (top.tracks || []).map((track) => apiTrack(track)).filter(Boolean);
-    return { tracks, playlist: { title: `Top de ${artist.name}`, url: artist.external_urls?.spotify, thumbnail: artist.images?.[0]?.url } };
+    const album = await api(`/albums/${id}`);
+    const image = album.images?.[0]?.url;
+    const tracks = await collectPages(album.tracks, (item) => apiTrack({ ...item, album }, image));
+    return { tracks, playlist: { title: album.name, url: album.external_urls?.spotify, thumbnail: image } };
 }
 
 async function resolveWithEmbed({ type, id }) {
@@ -123,9 +113,10 @@ async function resolveWithEmbed({ type, id }) {
 
 async function resolveSpotify(input) {
     const parsed = await parseSpotify(input);
-    if (hasApiCredentials()) {
+    if (hasApiCredentials() && API_TYPES.has(parsed.type)) {
         try {
-            return await resolveWithApi(parsed);
+            const result = await resolveWithApi(parsed);
+            if (result.tracks.length) return result;
         } catch (error) {
             console.warn('Spotify API falló, uso el embed público:', error.message);
         }

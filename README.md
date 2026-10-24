@@ -34,7 +34,7 @@ Cada canción abre un panel con botones (pausar/reanudar, saltar, detener, repet
 ## Fuentes
 
 - **YouTube y SoundCloud**: canciones, playlists y búsqueda por nombre, vía yt-dlp.
-- **Spotify**: canciones, álbumes, playlists y artistas. Spotify no permite reproducir su audio, así que el bot lee los nombres y busca cada canción en YouTube justo antes de tocarla. Sin credenciales usa el reproductor público de Spotify (playlists de hasta ~100 canciones). Con `SPOTIFY_CLIENT_ID` y `SPOTIFY_CLIENT_SECRET` usa la API oficial.
+- **Spotify**: canciones, álbumes, playlists y artistas. Spotify no permite reproducir su audio, así que el bot lee los nombres y busca cada canción en YouTube justo antes de tocarla. Sin credenciales usa el reproductor público de Spotify (playlists de hasta ~100 canciones). Con `SPOTIFY_CLIENT_ID` y `SPOTIFY_CLIENT_SECRET` usa la API oficial para canciones y álbumes (álbumes completos, más datos). Las playlists y artistas siempre van por el reproductor público, porque desde 2026 la API en modo desarrollo no deja leer playlists ajenas ni el top de un artista. La cuenta dueña de la app de Spotify necesita Premium.
 - **Radios y streams**: cualquier URL de audio directa (`.mp3`, `.aac`, `.m3u8`…).
 
 ## Modos de sonido
