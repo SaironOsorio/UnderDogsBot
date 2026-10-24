@@ -78,48 +78,86 @@ async function playNextSoundCloudInQueue(guildId) {
     }
 }
 
-function createSoundCloudControlsRow(guildId) {
-    return new ActionRowBuilder().addComponents(
+function createControlsRow(guildId, { skip = false } = {}) {
+    const buttons = [
         new ButtonBuilder()
             .setCustomId(`sc_pause_${guildId}`)
-            .setLabel('⏸️ Pausar')
+            .setEmoji('⏸️')
+            .setLabel('Pausar')
             .setStyle(ButtonStyle.Primary),
         new ButtonBuilder()
             .setCustomId(`sc_resume_${guildId}`)
-            .setLabel('▶️ Reanudar')
+            .setEmoji('▶️')
+            .setLabel('Reanudar')
             .setStyle(ButtonStyle.Success),
-        new ButtonBuilder()
-            .setCustomId(`sc_skip_${guildId}`)
-            .setLabel('⏭️ Siguiente')
-            .setStyle(ButtonStyle.Secondary),
+    ];
+
+    if (skip) {
+        buttons.push(
+            new ButtonBuilder()
+                .setCustomId(`sc_skip_${guildId}`)
+                .setEmoji('⏭️')
+                .setLabel('Siguiente')
+                .setStyle(ButtonStyle.Secondary),
+        );
+    }
+
+    buttons.push(
         new ButtonBuilder()
             .setCustomId(`sc_stop_${guildId}`)
-            .setLabel('⏹️ Detener')
+            .setEmoji('⏹️')
+            .setLabel('Detener')
             .setStyle(ButtonStyle.Danger),
     );
+
+    return new ActionRowBuilder().addComponents(buttons);
 }
 
-function createSoundCloudEmbed(title, queueLength = 0) {
-    const embed = new EmbedBuilder()
-        .setColor('#FF7700')
-        .setTitle('🎧 Reproduciendo SoundCloud')
-        .setDescription(`**${title}**`)
-        .addFields({
-            name: 'Cola',
-            value: `${queueLength} pista(s) en espera`,
-            inline: true,
-        })
-        .setTimestamp();
-
-    return embed;
+function createSoundCloudControlsRow(guildId) {
+    return createControlsRow(guildId, { skip: true });
 }
 
-function createRadioEmbed(radioName) {
+function createRadioControlsRow(guildId) {
+    return createControlsRow(guildId);
+}
+
+function createSoundCloudEmbed(title, interaction, queueLength = 0) {
     return new EmbedBuilder()
-        .setColor('#00FF00')
-        .setTitle('📻 Reproduciendo Emisora')
-        .setDescription(`**${radioName}**`)
-        .setFooter({ text: 'Emisora en vivo - Pausar, Reanudar, Detener disponibles' })
+        .setColor('#FF7700')
+        .setAuthor({
+            name: 'SoundCloud',
+            iconURL: interaction.client.user.displayAvatarURL(),
+        })
+        .setTitle('🎧 Reproduciendo ahora')
+        .setDescription(`### ${title}`)
+        .addFields(
+            { name: '🔊 Canal', value: `${interaction.member.voice.channel}`, inline: true },
+            { name: '👤 Pedido por', value: `${interaction.user}`, inline: true },
+            { name: '📋 Cola', value: `${queueLength} pista(s)`, inline: true },
+        )
+        .setThumbnail(interaction.client.user.displayAvatarURL())
+        .setFooter({ text: 'Usa los botones para controlar la reproducción' })
+        .setTimestamp();
+}
+
+function createRadioEmbed(radioName, interaction) {
+    const displayName = radioName.charAt(0).toUpperCase() + radioName.slice(1);
+
+    return new EmbedBuilder()
+        .setColor('#2ECC71')
+        .setAuthor({
+            name: 'Radio en vivo',
+            iconURL: interaction.client.user.displayAvatarURL(),
+        })
+        .setTitle('📻 Reproduciendo emisora')
+        .setDescription(`### ${displayName}`)
+        .addFields(
+            { name: '🔊 Canal', value: `${interaction.member.voice.channel}`, inline: true },
+            { name: '👤 Pedido por', value: `${interaction.user}`, inline: true },
+            { name: '🔴 Estado', value: 'En vivo', inline: true },
+        )
+        .setThumbnail(interaction.client.user.displayAvatarURL())
+        .setFooter({ text: 'Usa los botones para pausar, reanudar o detener' })
         .setTimestamp();
 }
 
@@ -222,7 +260,7 @@ module.exports = {
                     voiceState?.player?.once(AudioPlayerStatus.Idle, () => {
                         void playNextSoundCloudInQueue(interaction.guildId);
                     });
-                    const embed = createSoundCloudEmbed(title);
+                    const embed = createSoundCloudEmbed('SoundCloud', interaction, soundCloudQueues.get(interaction.guildId)?.length || 0);
                     const controlsRow = createSoundCloudControlsRow(interaction.guildId);
                     interaction.editReply({
                         embeds: [embed],
@@ -237,9 +275,10 @@ module.exports = {
                 });
                 title = `📻 ${emisora.toUpperCase()}`;
                 if (success) {
-                    const embed = createRadioEmbed(title);
+                    const embed = createRadioEmbed(emisora, interaction);
                     interaction.editReply({
                         embeds: [embed],
+                        components: [createRadioControlsRow(interaction.guildId)],
                     });
                     return;
                 }
