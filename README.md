@@ -103,3 +103,8 @@ Mientras suena algo, la presencia del bot muestra "Escuchando *canción — arti
   "olimpica": { "name": "Olímpica Stereo", "url": "https://...", "image": "https://..." }
 }
 ```
+
+## Créditos
+
+- **Sairon Osorio**: creador del bot.
+- **Miller Angel Ferrer Diaz**: colaborador (YouTube, SoundCloud, Spotify, cola y panel de controles, modos de sonido, estado "Escuchando").

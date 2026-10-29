@@ -20,7 +20,7 @@
     "soundcloud",
     "spotify"
   ],
-  "author": "",
+  "author": "Sairon Osorio",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
@@ -36,5 +36,8 @@
   },
   "engines": {
     "node": ">=20"
-  }
+  },
+  "contributors": [
+    "Miller Angel Ferrer Diaz"
+  ]
 }
