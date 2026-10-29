@@ -1,282 +1,102 @@
-const { Client, Collection, REST, Routes, ActivityType } = require('discord.js');
-const { Player } = require('discord-player');
-const { DefaultExtractors } = require('@discord-player/extractor');
-const fs = require('fs');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
+
+const fs = require('fs');
+const { Client, Collection, REST, Routes, GatewayIntentBits, MessageFlags } = require('discord.js');
 const { checkRateLimit } = require('./utils/rateLimiter');
+const manager = require('./music/manager');
+const presence = require('./music/presence');
+const { handleButton } = require('./music/buttons');
+const { YTDLP_PATH, FFMPEG_PATH } = require('./music/binaries');
 
-function loadVoiceManager() {
-    const candidates = [
-        path.join(__dirname, 'utils', 'voiceManager'),
-        path.join(process.cwd(), 'src', 'utils', 'voiceManager'),
-        path.join(process.cwd(), 'utils', 'voiceManager'),
-    ];
-
-    for (const candidate of candidates) {
-        try {
-            return require(candidate);
-        } catch (error) {
-            if (error?.code !== 'MODULE_NOT_FOUND') {
-                throw error;
-            }
-        }
-    }
-
-    throw new Error('No se pudo cargar voiceManager. Verifica el entrypoint del servidor (MAIN_FILE) y la carpeta src/.');
-}
-
-const { pausePlayback, resumePlayback, stopPlayback, getVoiceConnection } = loadVoiceManager();
-
-const RATE_LIMITS = {
-    commandUser: { limit: 8, windowMs: 15_000 },
-    commandGuild: { limit: 30, windowMs: 15_000 },
-    radioUser: { limit: 5, windowMs: 20_000 },
-    radioGuild: { limit: 12, windowMs: 20_000 },
-    buttonUser: { limit: 10, windowMs: 10_000 },
-};
-
-const AUTO_DISCONNECT_MS = Number.parseInt(process.env.AUTO_DISCONNECT_MS || '90000', 10);
-const idleDisconnectTimers = new Map();
-
-function formatRateLimitMessage(retryAfterMs) {
-    const seconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
-    return `⏳ Demasiadas solicitudes. Espera ${seconds}s e inténtalo de nuevo.`;
-}
-
-function getHumanListenersForInteraction(interaction) {
-    const voiceState = getVoiceConnection(interaction.guildId);
-    const channelId = voiceState?.connection?.joinConfig?.channelId;
-    const guild = interaction.guild;
-
-    if (!guild || !channelId) {
-        return 0;
-    }
-
-    const channel = guild.channels.cache.get(channelId);
-    if (!channel?.members) {
-        return 0;
-    }
-
-    return channel.members.filter(member => !member.user?.bot).size;
-}
-
-function scalePolicyByTraffic(basePolicy, humanListeners) {
-    if (humanListeners >= 8) {
-        return { limit: Math.ceil(basePolicy.limit * 2.2), windowMs: basePolicy.windowMs };
-    }
-
-    if (humanListeners >= 4) {
-        return { limit: Math.ceil(basePolicy.limit * 1.6), windowMs: basePolicy.windowMs };
-    }
-
-    return basePolicy;
-}
-
-function clearIdleDisconnectTimer(guildId) {
-    const timer = idleDisconnectTimers.get(guildId);
-    if (timer) {
-        clearTimeout(timer);
-        idleDisconnectTimers.delete(guildId);
-    }
-}
-
-function scheduleIdleDisconnect(guildId) {
-    if (!guildId) {
-        return;
-    }
-
-    const voiceState = getVoiceConnection(guildId);
-    const channelId = voiceState?.connection?.joinConfig?.channelId;
-
-    if (!channelId) {
-        clearIdleDisconnectTimer(guildId);
-        return;
-    }
-
-    const guild = client.guilds.cache.get(guildId);
-    const channel = guild?.channels?.cache?.get(channelId);
-    const humanCount = channel?.members ? channel.members.filter(member => !member.user?.bot).size : 0;
-
-    if (humanCount > 0) {
-        clearIdleDisconnectTimer(guildId);
-        return;
-    }
-
-    if (idleDisconnectTimers.has(guildId)) {
-        return;
-    }
-
-    const timer = setTimeout(() => {
-        idleDisconnectTimers.delete(guildId);
-
-        const currentVoiceState = getVoiceConnection(guildId);
-        const currentChannelId = currentVoiceState?.connection?.joinConfig?.channelId;
-        const currentGuild = client.guilds.cache.get(guildId);
-        const currentChannel = currentGuild?.channels?.cache?.get(currentChannelId);
-        const currentHumanCount = currentChannel?.members
-            ? currentChannel.members.filter(member => !member.user?.bot).size
-            : 0;
-
-        if (currentVoiceState && currentHumanCount === 0) {
-            stopPlayback(guildId);
-            console.log(`[${guildId}] Desconectado por inactividad: no había usuarios en voice.`);
-        }
-    }, AUTO_DISCONNECT_MS);
-
-    timer.unref();
-    idleDisconnectTimers.set(guildId, timer);
-}
-
-// Inicializar tweetnacl para encriptación
-try {
-    const nacl = require('tweetnacl');
-    console.log('✅ TweetNaCl inicializado correctamente');
-} catch (err) {
-    console.warn('Advertencia: TweetNaCl no disponible, usando cifrado por defecto');
-}
-
-// Inicializar libsodium de forma síncrona ANTES de crear el cliente
-async function initializeLibsodium() {
-    try {
-        const sodium = require('libsodium-wrappers');
-        await sodium.ready;
-        console.log('✅ Libsodium inicializado correctamente (necesario para voice)');
-        return true;
-    } catch (err) {
-        console.error('❌ Error inicializando libsodium:', err.message);
-        return false;
-    }
-}
-
-// ========== CONFIGURACIÓN INICIAL ==========
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
 const COMMAND_SCOPE = (process.env.COMMAND_SCOPE || (GUILD_ID ? 'guild' : 'global')).toLowerCase();
 
-if (!TOKEN) {
-    throw new Error('Token no configurado. Revisa el archivo .env');
-}
+if (!TOKEN) throw new Error('Token no configurado. Revisa el archivo .env');
+if (!CLIENT_ID) throw new Error('CLIENT_ID no configurado. Agrega DISCORD_CLIENT_ID en el .env');
 
-if (!CLIENT_ID) {
-    throw new Error('CLIENT_ID no configurado. Agrega DISCORD_CLIENT_ID en el .env');
-}
+const HEAVY_COMMANDS = new Set(['play', 'radio']);
+const RATE_LIMITS = {
+    commandUser: { limit: 8, windowMs: 15_000 },
+    commandGuild: { limit: 30, windowMs: 15_000 },
+    heavyUser: { limit: 5, windowMs: 20_000 },
+    heavyGuild: { limit: 12, windowMs: 20_000 },
+    buttonUser: { limit: 10, windowMs: 10_000 },
+};
 
-// Evitar doble instancia del bot
 const LOCK_PATH = path.join(__dirname, '../bot.pid');
+
 function ensureSingleInstance() {
     try {
         if (fs.existsSync(LOCK_PATH)) {
-            const pid = parseInt(fs.readFileSync(LOCK_PATH, 'utf-8'), 10);
-            if (!Number.isNaN(pid)) {
+            const pid = Number.parseInt(fs.readFileSync(LOCK_PATH, 'utf-8'), 10);
+            if (!Number.isNaN(pid) && pid !== process.pid) {
                 try {
                     process.kill(pid, 0);
                     console.error(`❌ Ya hay una instancia corriendo (PID ${pid}). Salgo.`);
                     process.exit(1);
-                } catch (_) {
-                    // Proceso muerto, sobreescribir lock
-                }
+                } catch {}
             }
         }
         fs.writeFileSync(LOCK_PATH, String(process.pid));
-        process.on('exit', () => {
-            try { fs.unlinkSync(LOCK_PATH); } catch (_) {}
-        });
-        process.on('SIGINT', () => { try { fs.unlinkSync(LOCK_PATH); } catch (_) {} process.exit(0); });
-        process.on('SIGTERM', () => { try { fs.unlinkSync(LOCK_PATH); } catch (_) {} process.exit(0); });
-    } catch (err) {
-        console.error('No pude crear el lock de instancia única:', err);
+    } catch (error) {
+        console.error('No pude crear el lock de instancia única:', error);
     }
+}
+
+function shutdown(code = 0) {
+    try {
+        manager.destroyAll();
+    } catch {}
+    try {
+        fs.unlinkSync(LOCK_PATH);
+    } catch {}
+    process.exit(code);
 }
 
 ensureSingleInstance();
+process.on('exit', () => { try { fs.unlinkSync(LOCK_PATH); } catch {} });
+process.on('SIGINT', () => shutdown(0));
+process.on('SIGTERM', () => shutdown(0));
+process.on('unhandledRejection', (reason) => console.error('❌ Promesa rechazada sin manejar:', reason));
+process.on('uncaughtException', (error) => console.error('❌ Excepción no capturada:', error));
 
-// ========== CONFIGURACIÓN DE DISCORD ==========
 const client = new Client({
-    intents: ['Guilds', 'GuildVoiceStates', 'DirectMessages']
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
 });
-
 client.commands = new Collection();
 
-// Inicializar discord-player DESPUÉS de crear el cliente
-const player = new Player(client);
-
-// Cargar extractores por defecto
-(async () => {
-    try {
-        await player.extractors.loadMulti(DefaultExtractors);
-        console.log('✅ Extractores de discord-player cargados correctamente');
-    } catch (error) {
-        console.error('❌ Error cargando extractores:', error);
-    }
-})();
-
-// Requerido por discord-player v7
-player.events.on('error', (queue, error) => {
-    console.error(`❌ Error en la cola (${queue?.guild?.id ?? 'sin guild'}):`, error.message);
-});
-
-player.events.on('playerError', (queue, error) => {
-    console.error(`❌ Error del reproductor (${queue?.guild?.id ?? 'sin guild'}):`, error.message);
-});
-
-// Guardar referencia del player en el cliente para acceso desde comandos
-client.player = player;
-
-client.on('error', (error) => {
-    console.error('❌ Error del cliente Discord:', error);
-});
-
-client.on('warn', (warning) => {
-    console.warn('⚠️ Advertencia del cliente Discord:', warning);
-});
-
-process.on('unhandledRejection', (reason) => {
-    console.error('❌ Promesa rechazada sin manejar:', reason);
-});
-
-process.on('uncaughtException', (error) => {
-    console.error('❌ Excepción no capturada:', error);
-});
-
-// ========== CARGAR COMANDOS ==========
 const commandsPath = path.join(__dirname, 'commands');
-const allowedCommands = new Set(['radio', 'emisoras', 'help']);
-const commandFiles = fs
-    .readdirSync(commandsPath)
-    .filter(file => file.endsWith('.js'))
-    .filter(file => allowedCommands.has(path.basename(file, '.js')));
-
-const commands = [];
-for (const file of commandFiles) {
-    const filePath = path.join(commandsPath, file);
-    const command = require(filePath);
-    client.commands.set(command.name, command);
-    commands.push(command);
-    console.log(`✅ Comando cargado: ${command.name}`);
+for (const file of fs.readdirSync(commandsPath).filter((name) => name.endsWith('.js'))) {
+    const command = require(path.join(commandsPath, file));
+    if (!command?.data || typeof command.execute !== 'function') {
+        console.warn(`⚠️ ${file} no exporta data/execute, lo ignoro.`);
+        continue;
+    }
+    client.commands.set(command.data.name, command);
 }
+console.log(`✅ Comandos cargados: ${[...client.commands.keys()].join(', ')}`);
 
-// ========== REGISTRAR SLASH COMMANDS ==========
 async function registerSlashCommands() {
+    const body = client.commands.map((command) => command.data.toJSON());
     const rest = new REST({ version: '10' }).setToken(TOKEN);
     const globalRoute = Routes.applicationCommands(CLIENT_ID);
     const guildRoute = GUILD_ID ? Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID) : null;
 
     if (COMMAND_SCOPE === 'guild' && guildRoute) {
         try {
-            await rest.put(guildRoute, { body: commands });
+            await rest.put(guildRoute, { body });
             console.log(`✅ Slash commands registrados en guild ${GUILD_ID}`);
-
-            // Evita comandos duplicados en el cliente de Discord si existían globales.
             await rest.put(globalRoute, { body: [] });
-            console.log('🧹 Slash commands globales limpiados para evitar duplicados con guild.');
+            console.log('🧹 Slash commands globales limpiados para evitar duplicados.');
             return;
-        } catch (err) {
-            if (err?.status === 403 || err?.code === 50001) {
+        } catch (error) {
+            if (error?.status === 403 || error?.code === 50001) {
                 console.warn('⚠️ Sin acceso para registrar comandos en el guild. Intento global...');
             } else {
-                console.error('Error registrando slash commands (guild):', err);
+                console.error('Error registrando slash commands (guild):', error);
             }
         }
     }
@@ -286,199 +106,133 @@ async function registerSlashCommands() {
     }
 
     try {
-        await rest.put(globalRoute, { body: commands });
+        await rest.put(globalRoute, { body });
         console.log('✅ Slash commands registrados (global).');
-
         if (COMMAND_SCOPE === 'both' && guildRoute) {
-            await rest.put(guildRoute, { body: commands });
-            console.log(`✅ Slash commands también registrados en guild ${GUILD_ID} (modo both).`);
+            await rest.put(guildRoute, { body });
+            console.log(`✅ Slash commands también registrados en guild ${GUILD_ID}.`);
         }
-    } catch (err) {
-        console.error('Error registrando slash commands (global):', err);
+    } catch (error) {
+        console.error('Error registrando slash commands (global):', error);
     }
 }
 
-registerSlashCommands().catch((err) => console.error('Error en registerSlashCommands:', err));
+function humanListeners(interaction) {
+    const queue = manager.get(interaction.guildId);
+    const channel = queue?.voiceChannelId ? interaction.guild?.channels.cache.get(queue.voiceChannelId) : null;
+    return channel?.members ? channel.members.filter((member) => !member.user.bot).size : 0;
+}
 
-// ========== EVENTOS DEL BOT ==========
-client.once('ready', () => {
-    console.log(`✅ Bot conectado como: ${client.user.tag}`);
-    const activities = [
-        { name: 'Escuchando Olimpica Stereo', type: ActivityType.Listening },
-        { name: 'Escuchando Tropicana', type: ActivityType.Listening },
-        { name: 'Jhostin es Marica', type: ActivityType.Watching },
-        { name: 'Monda pa su Jopo', type: ActivityType.Playing },
-    ];
+function scalePolicy(policy, listeners) {
+    if (listeners >= 8) return { limit: Math.ceil(policy.limit * 2.2), windowMs: policy.windowMs };
+    if (listeners >= 4) return { limit: Math.ceil(policy.limit * 1.6), windowMs: policy.windowMs };
+    return policy;
+}
 
-    const setRandomActivity = () => {
-        const choice = activities[Math.floor(Math.random() * activities.length)];
-        client.user.setPresence({
-            activities: [{ name: choice.name, type: choice.type }],
-            status: 'online'
-        });
-    };
+async function replyEphemeral(interaction, content) {
+    const payload = { content, flags: MessageFlags.Ephemeral };
+    try {
+        if (interaction.replied || interaction.deferred) await interaction.followUp(payload);
+        else await interaction.reply(payload);
+    } catch (error) {
+        console.error('No pude responder a la interacción:', error.message);
+    }
+}
 
-    setRandomActivity();
-    setInterval(setRandomActivity, 60_000);
-    
-    // Discord Player v7 crea las colas (nodes) bajo demanda
-    console.log('✅ Player listo. Las colas se crearán al reproducir.');
-});
+function rateLimitMessage(retryAfterMs) {
+    return `⏳ Demasiadas solicitudes. Espera ${Math.max(1, Math.ceil(retryAfterMs / 1000))}s e inténtalo de nuevo.`;
+}
 
-client.on('voiceStateUpdate', (oldState, newState) => {
-    const guildId = oldState.guild?.id || newState.guild?.id;
-    if (!guildId) {
+function isLimited(interaction) {
+    const guildKey = interaction.guildId || 'dm';
+    const userId = interaction.user.id;
+    const heavy = HEAVY_COMMANDS.has(interaction.commandName);
+    const listeners = humanListeners(interaction);
+    const userPolicy = scalePolicy(heavy ? RATE_LIMITS.heavyUser : RATE_LIMITS.commandUser, listeners);
+    const guildPolicy = scalePolicy(heavy ? RATE_LIMITS.heavyGuild : RATE_LIMITS.commandGuild, listeners);
+
+    const userCheck = checkRateLimit(`cmd:user:${interaction.commandName}:${guildKey}:${userId}`, userPolicy.limit, userPolicy.windowMs);
+    if (userCheck.limited) return userCheck.retryAfterMs;
+    const guildCheck = checkRateLimit(`cmd:guild:${interaction.commandName}:${guildKey}`, guildPolicy.limit, guildPolicy.windowMs);
+    if (guildCheck.limited) return guildCheck.retryAfterMs;
+    return 0;
+}
+
+client.on('interactionCreate', async (interaction) => {
+    if (interaction.isAutocomplete()) {
+        const command = client.commands.get(interaction.commandName);
+        if (!command?.autocomplete) return;
+        try {
+            await command.autocomplete(interaction);
+        } catch (error) {
+            if (error?.code !== 10062) console.warn('Error en autocompletado:', error.message);
+        }
         return;
     }
 
-    // Cualquier cambio de membresía en voice puede activar o cancelar desconexión por inactividad.
-    scheduleIdleDisconnect(guildId);
-});
-
-// Manejar interacciones (slash commands y botones)
-client.on('interactionCreate', async (interaction) => {
-    // Manejar slash commands
     if (interaction.isChatInputCommand()) {
         const command = client.commands.get(interaction.commandName);
+        if (!command) return;
 
-        if (!command) {
-            console.error(`Comando no encontrado: ${interaction.commandName}`);
-            return;
-        }
-
-        const guildKey = interaction.guildId || 'dm';
-        const userId = interaction.user?.id || 'unknown';
-        const isRadioCommand = interaction.commandName === 'radio';
-        const baseUserPolicy = isRadioCommand ? RATE_LIMITS.radioUser : RATE_LIMITS.commandUser;
-        const baseGuildPolicy = isRadioCommand ? RATE_LIMITS.radioGuild : RATE_LIMITS.commandGuild;
-        const humanListeners = getHumanListenersForInteraction(interaction);
-        const userPolicy = scalePolicyByTraffic(baseUserPolicy, humanListeners);
-        const guildPolicy = scalePolicyByTraffic(baseGuildPolicy, humanListeners);
-
-        const userLimit = checkRateLimit(
-            `cmd:user:${interaction.commandName}:${guildKey}:${userId}`,
-            userPolicy.limit,
-            userPolicy.windowMs
-        );
-
-        if (userLimit.limited) {
-            const reply = { content: formatRateLimitMessage(userLimit.retryAfterMs), flags: 64 };
-            if (interaction.replied || interaction.deferred) {
-                await interaction.followUp(reply);
-            } else {
-                await interaction.reply(reply);
-            }
-            return;
-        }
-
-        const guildLimit = checkRateLimit(
-            `cmd:guild:${interaction.commandName}:${guildKey}`,
-            guildPolicy.limit,
-            guildPolicy.windowMs
-        );
-
-        if (guildLimit.limited) {
-            const reply = { content: formatRateLimitMessage(guildLimit.retryAfterMs), flags: 64 };
-            if (interaction.replied || interaction.deferred) {
-                await interaction.followUp(reply);
-            } else {
-                await interaction.reply(reply);
-            }
-            return;
-        }
+        const retryAfter = isLimited(interaction);
+        if (retryAfter) return replyEphemeral(interaction, rateLimitMessage(retryAfter));
 
         try {
             await command.execute(interaction);
         } catch (error) {
-            console.error(`Error ejecutando comando ${interaction.commandName}:`, error);
-            const reply = { content: '❌ Hubo un error ejecutando ese comando.', flags: 64 };
-            try {
-                if (interaction.replied || interaction.deferred) {
-                    await interaction.followUp(reply);
-                } else {
-                    await interaction.reply(reply);
-                }
-            } catch (err) {
-                console.error('Error respondiendo a interacción fallida:', err.message);
-            }
+            console.error(`Error ejecutando /${interaction.commandName}:`, error);
+            await replyEphemeral(interaction, '❌ Hubo un error ejecutando ese comando.');
         }
         return;
     }
 
-    // Manejar botones de SoundCloud
-    if (interaction.isButton()) {
-        const customId = interaction.customId;
+    if (interaction.isButton() || interaction.isStringSelectMenu()) {
+        if (!interaction.customId.startsWith('music:') && !interaction.customId.startsWith('queue:')) return;
 
-        if (!customId.startsWith('sc_')) {
-            return;
-        }
-
-        const buttonLimit = checkRateLimit(
-            `btn:${interaction.guildId || 'dm'}:${interaction.user?.id || 'unknown'}`,
+        const check = checkRateLimit(
+            `btn:${interaction.guildId || 'dm'}:${interaction.user.id}`,
             RATE_LIMITS.buttonUser.limit,
-            RATE_LIMITS.buttonUser.windowMs
+            RATE_LIMITS.buttonUser.windowMs,
         );
-
-        if (buttonLimit.limited) {
-            await interaction.reply({ content: formatRateLimitMessage(buttonLimit.retryAfterMs), flags: 64 });
-            return;
-        }
-
-        await interaction.deferUpdate();
-        const guildId = interaction.guildId;
-        const voiceState = getVoiceConnection(guildId);
-
-        if (!voiceState) {
-            await interaction.followUp({ content: '❌ No hay reproducción activa.', flags: 64 });
-            return;
-        }
-
-        const action = customId.split('_')[1];
+        if (check.limited) return replyEphemeral(interaction, rateLimitMessage(check.retryAfterMs));
 
         try {
-            if (action === 'pause') {
-                pausePlayback(guildId);
-                await interaction.followUp({ content: '⏸️ Reproducción pausada.', flags: 64 });
-            } else if (action === 'resume') {
-                resumePlayback(guildId);
-                await interaction.followUp({ content: '▶️ Reproducción reanudada.', flags: 64 });
-            } else if (action === 'skip') {
-                voiceState.player.stop();
-                await interaction.followUp({ content: '⏭️ Saltando a la siguiente.', flags: 64 });
-            } else if (action === 'stop') {
-                stopPlayback(guildId);
-                await interaction.followUp({ content: '⏹️ Reproducción detenida.', flags: 64 });
-            }
+            await handleButton(interaction);
         } catch (error) {
             console.error('Error manejando botón:', error);
-            await interaction.followUp({ content: '❌ Error al procesar el botón.', flags: 64 });
+            await replyEphemeral(interaction, '❌ Error al procesar el botón.');
         }
     }
 });
 
-// ========== INICIAR BOT ==========
-async function startBot() {
-    console.log('⏳ Inicializando libsodium para voice...');
-    const libsodiumOk = await initializeLibsodium();
-    
-    if (!libsodiumOk) {
-        console.error('❌ No se pudo inicializar libsodium. El voice podría no funcionar.');
-    }
-    
-    // Dar tiempo a que libsodium se estabilice
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    console.log('📱 Conectando bot a Discord...');
+client.on('voiceStateUpdate', (oldState, newState) => manager.handleVoiceStateUpdate(oldState, newState));
+client.on('error', (error) => console.error('❌ Error del cliente Discord:', error));
+client.on('warn', (warning) => console.warn('⚠️ Advertencia del cliente Discord:', warning));
+
+client.once('clientReady', () => {
+    console.log(`✅ Bot conectado como: ${client.user.tag}`);
+    presence.init(client);
+});
+
+async function initializeLibsodium() {
     try {
-        const loginResult = await client.login(TOKEN);
-        console.log('✅ Login de Discord completado:', Boolean(loginResult));
+        const sodium = require('libsodium-wrappers');
+        await sodium.ready;
+        console.log('✅ Libsodium listo');
     } catch (error) {
-        console.error('❌ Error en client.login(TOKEN):', error);
-        throw error;
+        console.error('❌ Error inicializando libsodium:', error.message);
     }
 }
 
-startBot().catch(err => {
-    console.error('❌ Error fatal iniciando bot:', err);
+async function startBot() {
+    console.log(`🎵 yt-dlp: ${YTDLP_PATH}`);
+    console.log(`🎵 ffmpeg: ${FFMPEG_PATH}`);
+    await initializeLibsodium();
+    await registerSlashCommands();
+    await client.login(TOKEN);
+}
+
+startBot().catch((error) => {
+    console.error('❌ Error fatal iniciando bot:', error);
     process.exit(1);
 });

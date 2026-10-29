@@ -1,21 +1,16 @@
-const { EmbedBuilder } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const { RADIOS } = require('../utils/config');
 
 module.exports = {
-    name: 'emisoras',
-    description: 'Lista las emisoras de radio disponibles',
-    
+    data: new SlashCommandBuilder().setName('emisoras').setDescription('Lista las emisoras disponibles'),
+
     async execute(interaction) {
-        const emisorsList = Object.keys(RADIOS)
-            .map(name => `• **${name}**`)
-            .join('\n');
-
+        const list = Object.values(RADIOS).map((radio) => `• **${radio.name}**`).join('\n');
         const embed = new EmbedBuilder()
-            .setColor('#FF5733')
-            .setTitle('📻 Emisoras Disponibles')
-            .setDescription(emisorsList)
-            .setFooter({ text: 'Usa /radio <nombre> para reproducir' });
-
+            .setColor(0x2b90d9)
+            .setTitle('📻 Emisoras disponibles')
+            .setDescription(list || 'No hay emisoras configuradas.')
+            .setFooter({ text: 'Usa /radio para sintonizar una' });
         await interaction.reply({ embeds: [embed], flags: 64 });
     },
 };
