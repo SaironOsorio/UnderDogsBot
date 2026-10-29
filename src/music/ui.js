@@ -27,7 +27,8 @@ function nowPlayingEmbed(queue) {
 
     const info = sourceInfo(track.source);
     const isRadio = track.source === 'radio';
-    const header = queue.isPaused ? 'En pausa' : isRadio ? 'Radio en vivo' : `Reproduciendo · ${info.label}`;
+    const via = track.fallbackFrom ? ' (respaldo, YouTube bloqueado)' : '';
+    const header = queue.isPaused ? 'En pausa' : isRadio ? 'Radio en vivo' : `Reproduciendo · ${info.label}${via}`;
     const elapsed = queue.elapsedMs;
     const timeline = track.isLive
         ? '🔴 **EN VIVO**'

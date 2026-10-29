@@ -1,6 +1,6 @@
 const { spawn } = require('child_process');
 const { FFMPEG_PATH } = require('./binaries');
-const { spawnAudioStream, lastErrorLine } = require('./ytdlp');
+const { spawnAudioStream, lastErrorLine, isBotCheck, markYouTubeBlocked } = require('./ytdlp');
 const { presetFilter } = require('./equalizer');
 
 const SAMPLE_RATE = Number.parseInt(process.env.FFMPEG_SAMPLE_RATE || '48000', 10);
@@ -34,6 +34,12 @@ function createPipeline(track, { eq, seekMs = 0 } = {}) {
 
     const ffmpeg = spawn(FFMPEG_PATH, ffArgs, { stdio: [ytdlp ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
     let ffmpegErrors = '';
+    const closed = (proc) => new Promise((resolve) => {
+        if (!proc) return resolve();
+        proc.once('close', resolve);
+        proc.once('error', resolve);
+    });
+    const done = Promise.all([closed(ffmpeg), closed(ytdlp)]);
 
     ffmpeg.stderr.on('data', (chunk) => { ffmpegErrors = (ffmpegErrors + chunk).slice(-2000); });
     ffmpeg.on('error', (error) => {
@@ -52,12 +58,19 @@ function createPipeline(track, { eq, seekMs = 0 } = {}) {
             track.failed = error.code === 'ENOENT' ? 'yt-dlp no está instalado. Ejecuta "npm run setup".' : error.message;
         });
         ytdlp.on('close', (code) => {
-            if (!killed && code && !track.failed) track.failed = lastErrorLine(ytdlpErrors) || `yt-dlp salió con código ${code}`;
+            if (killed || !code) return;
+            const message = lastErrorLine(ytdlpErrors) || `yt-dlp salió con código ${code}`;
+            track.failed = message;
+            if (isBotCheck(message)) {
+                track.botCheck = true;
+                markYouTubeBlocked();
+            }
         });
     }
 
     return {
         output: ffmpeg.stdout,
+        done,
         kill() {
             killed = true;
             safeKill(ytdlp);

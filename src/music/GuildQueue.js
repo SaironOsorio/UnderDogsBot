@@ -10,7 +10,8 @@ const {
     StreamType,
 } = require('@discordjs/voice');
 const { createPipeline } = require('./audio');
-const { ensurePlayable } = require('./resolver');
+const { ensurePlayable, soundCloudFallback } = require('./resolver');
+const { friendlyError } = require('./ytdlp');
 const { PRESETS, DEFAULT_PRESET } = require('./equalizer');
 const settings = require('../utils/settings');
 
@@ -134,7 +135,13 @@ class GuildQueue extends EventEmitter {
                     this.emit('trackStart', track);
                     return;
                 } catch (error) {
-                    this.emit('trackError', track, error);
+                    const fallback = error.botCheck ? soundCloudFallback(track) : null;
+                    if (fallback) {
+                        this.tracks.unshift(fallback);
+                        this.emit('trackFallback', track, fallback);
+                    } else {
+                        this.emit('trackError', track, error);
+                    }
                 }
             }
             if (!this.destroyed) this.emit('queueEnd');
@@ -186,22 +193,46 @@ class GuildQueue extends EventEmitter {
     handleIdle() {
         const finished = this.current;
         const playedMs = this.resource?.playbackDuration ?? 0;
+        const pipeline = this.pipeline;
+        const skipped = this.skipRequested;
+        this.skipRequested = false;
+        this.pipeline = null;
         this.seekOffsetMs = 0;
-        this.killPipeline();
         this.resource = null;
         this.current = null;
-        if (this.destroyed) return;
+        if (this.destroyed) {
+            pipeline?.kill();
+            return;
+        }
 
+        const shortPlay = finished && !skipped && playedMs < MIN_PLAY_MS;
+        if (!shortPlay || !pipeline?.done) {
+            pipeline?.kill();
+            this.finishTrack(finished, { skipped, playedMs });
+            return;
+        }
+
+        this.loading = true;
+        const timeout = new Promise((resolve) => setTimeout(resolve, 3000).unref?.());
+        Promise.race([pipeline.done, timeout]).then(() => {
+            pipeline.kill();
+            this.loading = false;
+            if (!this.destroyed) this.finishTrack(finished, { skipped, playedMs });
+        });
+    }
+
+    finishTrack(finished, { skipped, playedMs }) {
         if (finished) {
-            const skipped = this.skipRequested;
-            this.skipRequested = false;
-
             if (!skipped && playedMs < MIN_PLAY_MS && !finished.failed) {
                 finished.failed = 'El audio terminó sin reproducirse.';
             }
 
-            if (finished.failed && !skipped) {
-                this.emit('trackError', finished, new Error(finished.failed));
+            const fallback = !skipped && finished.botCheck ? soundCloudFallback(finished) : null;
+            if (fallback) {
+                this.tracks.unshift(fallback);
+                this.emit('trackFallback', finished, fallback);
+            } else if (finished.failed && !skipped) {
+                this.emit('trackError', finished, new Error(friendlyError(finished.failed)));
             } else if (!finished.isLive) {
                 if (this.loop === 'track' && !skipped) this.tracks.unshift(finished);
                 else if (this.loop === 'queue') this.tracks.push(finished);

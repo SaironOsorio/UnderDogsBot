@@ -1,4 +1,4 @@
-const { runJson } = require('./ytdlp');
+const { runJson, isYouTubeBlocked } = require('./ytdlp');
 const { isSpotify, resolveSpotify } = require('./spotify');
 
 const MAX_PLAYLIST_SIZE = Number.parseInt(process.env.MAX_PLAYLIST_SIZE || '100', 10);
@@ -118,6 +118,37 @@ function directTrack(url) {
     };
 }
 
+async function youtubeOEmbed(url) {
+    try {
+        const response = await fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(url)}`, {
+            signal: AbortSignal.timeout(8000),
+        });
+        if (!response.ok) return null;
+        const data = await response.json();
+        return { title: data.title, author: data.author_name, thumbnail: data.thumbnail_url };
+    } catch {
+        return null;
+    }
+}
+
+async function resolveBlockedYouTube(url) {
+    if (isYouTubePlaylistUrl(url)) return null;
+    const meta = await youtubeOEmbed(url);
+    if (!meta?.title) return null;
+    const fallback = soundCloudFallback({ ...meta, source: 'youtube', url });
+    return fallback ? { tracks: [fallback], playlist: null } : null;
+}
+
+async function searchWithFallback(query, source) {
+    if (source === 'youtube' && isYouTubeBlocked()) return search(query, 'soundcloud');
+    try {
+        return await search(query, source);
+    } catch (error) {
+        if (error.botCheck && source === 'youtube') return search(query, 'soundcloud');
+        throw error;
+    }
+}
+
 async function resolve(input, { source = 'youtube', requestedBy = null } = {}) {
     const query = input.trim();
     const type = detectSource(query);
@@ -125,7 +156,15 @@ async function resolve(input, { source = 'youtube', requestedBy = null } = {}) {
 
     if (type === 'spotify') {
         result = await resolveSpotify(query);
-    } else if (type === 'youtube' || type === 'soundcloud') {
+    } else if (type === 'youtube') {
+        try {
+            result = (isYouTubeBlocked() && await resolveBlockedYouTube(query)) || await resolveWithYtDlp(query, type);
+        } catch (error) {
+            const fallback = error.botCheck ? await resolveBlockedYouTube(query) : null;
+            if (!fallback) throw error;
+            result = fallback;
+        }
+    } else if (type === 'soundcloud') {
         result = await resolveWithYtDlp(query, type);
     } else if (type === 'direct') {
         result = { tracks: [directTrack(query)], playlist: null };
@@ -136,7 +175,7 @@ async function resolve(input, { source = 'youtube', requestedBy = null } = {}) {
             result = { tracks: [directTrack(query)], playlist: null };
         }
     } else {
-        const track = await search(query, source);
+        const track = await searchWithFallback(query, source);
         result = { tracks: track ? [track] : [], playlist: null };
     }
 
@@ -146,13 +185,72 @@ async function resolve(input, { source = 'youtube', requestedBy = null } = {}) {
     return result;
 }
 
+const TITLE_NOISE_RE = /[([](?:[^)\]]*?(?:official|oficial|video|v[ií]deo|audio|lyrics?|letra|visualizer|visualiser|en vivo|live|hd|4k|remaster(?:ed)?|explicit)[^)\]]*)[)\]]/gi;
+
+function cleanSearchTitle(title) {
+    return String(title || '')
+        .replace(TITLE_NOISE_RE, ' ')
+        .replace(/\b(?:official|oficial)\s+(?:music\s+)?(?:video|audio)\b/gi, ' ')
+        .replace(/\|.*$/, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function fallbackQuery(track) {
+    if (track.query) return track.query;
+    const title = cleanSearchTitle(track.title);
+    const author = String(track.author || '').replace(/\s*-\s*Topic$/i, '').replace(/VEVO$/i, '').trim();
+    if (!author || author === 'Desconocido' || / [-–—] /.test(title) || title.toLowerCase().includes(author.toLowerCase())) return title;
+    return `${author} - ${title}`;
+}
+
+function isYouTubeTrack(track) {
+    return track.source === 'youtube' || (track.url && YOUTUBE_RE.test(track.url));
+}
+
+function soundCloudFallback(track) {
+    if (track.fallbackFrom || track.isLive || (!isYouTubeTrack(track) && !track.query)) return null;
+    const query = fallbackQuery(track);
+    if (!query) return null;
+    return {
+        title: track.title,
+        author: track.author,
+        duration: track.duration,
+        thumbnail: track.thumbnail,
+        displayUrl: track.displayUrl && !YOUTUBE_RE.test(track.displayUrl) ? track.displayUrl : null,
+        url: null,
+        query,
+        searchSource: 'soundcloud',
+        source: 'soundcloud',
+        fallbackFrom: 'youtube',
+        requestedBy: track.requestedBy,
+    };
+}
+
 async function ensurePlayable(track) {
+    if (isYouTubeBlocked() && !track.fallbackFrom && !track.isLive && (isYouTubeTrack(track) || (!track.url && track.query))) {
+        const fallback = soundCloudFallback(track);
+        if (fallback) Object.assign(track, fallback);
+    }
+
     if (!track.url && track.query) {
-        const found = await search(`${track.query} audio`, 'youtube');
-        if (!found) throw new Error(`No encontré "${track.query}" en YouTube.`);
+        const searchSource = track.searchSource || 'youtube';
+        const found = await search(searchSource === 'youtube' ? `${track.query} audio` : track.query, searchSource);
+        if (!found) {
+            const where = searchSource === 'soundcloud' ? 'SoundCloud' : 'YouTube';
+            throw new Error(`No encontré "${track.query}" en ${where}.`);
+        }
         track.url = found.url;
-        if (!track.duration) track.duration = found.duration;
-        if (!track.thumbnail) track.thumbnail = found.thumbnail;
+        if (!track.displayUrl) track.displayUrl = found.url;
+        if (searchSource === 'soundcloud') {
+            track.source = 'soundcloud';
+            track.duration = found.duration || track.duration;
+            track.thumbnail = found.thumbnail || track.thumbnail;
+            track.matchedTitle = found.title;
+        } else {
+            if (!track.duration) track.duration = found.duration;
+            if (!track.thumbnail) track.thumbnail = found.thumbnail;
+        }
     }
 
     if (track.needsInfo && track.url && track.source !== 'direct') {
@@ -160,6 +258,7 @@ async function ensurePlayable(track) {
             const info = await runJson(['--no-playlist', track.url], 30_000);
             Object.assign(track, trackFromInfo(info, track.source), { requestedBy: track.requestedBy });
         } catch (error) {
+            if (error.botCheck) throw error;
             console.warn(`No pude completar la info de ${track.url}:`, error.message);
         }
         track.needsInfo = false;
@@ -175,4 +274,6 @@ module.exports = {
     resolve,
     search,
     ensurePlayable,
+    soundCloudFallback,
+    cleanSearchTitle,
 };

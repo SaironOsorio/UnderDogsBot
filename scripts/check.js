@@ -3,6 +3,7 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
 const { YTDLP_PATH, FFMPEG_PATH } = require('../src/music/binaries');
+const { cookieStatus } = require('../src/music/ytdlp');
 
 function version(binary, args) {
     try {
@@ -23,5 +24,7 @@ for (const file of fs.readdirSync(commandsPath).filter((name) => name.endsWith('
 console.log(`Node:     ${process.version}`);
 console.log(`yt-dlp:   ${version(YTDLP_PATH, ['--version'])} (${YTDLP_PATH})`);
 console.log(`ffmpeg:   ${version(FFMPEG_PATH, ['-version'])}`);
+const cookies = cookieStatus();
+console.log(`Cookies:  ${cookies.ok ? 'OK, ' : 'ATENCIÓN, '}${cookies.text}`);
 console.log(`Spotify:  ${process.env.SPOTIFY_CLIENT_ID ? 'API oficial' : 'embed público (sin credenciales)'}`);
 console.log(`Comandos: ${names.join(', ')}`);

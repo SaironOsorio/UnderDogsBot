@@ -97,6 +97,12 @@ function attach(queue) {
         });
     });
 
+    queue.on('trackFallback', (track) => {
+        void sendToText(queue, {
+            embeds: [ui.idleEmbed(`⚠️ YouTube bloqueó **${cleanTitle(track?.title || 'la canción')}**. La busco en SoundCloud…`)],
+        });
+    });
+
     queue.on('stateUpdate', () => {
         presence.setPaused(queue, queue.isPaused);
         schedulePanelRefresh(queue);

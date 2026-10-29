@@ -6,3 +6,6 @@ node_modules/
 *.pid
 bin/
 data/
+cookies/*
+cookies*.txt
+!cookies/.gitkeep

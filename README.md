@@ -50,6 +50,26 @@ Todo lo que suena pasa por un ecualizador. Por defecto es **Carro**, para que se
 
 Los presets están en `src/music/equalizer.js`; agregar uno nuevo es sumar una entrada con sus filtros de ffmpeg.
 
+## YouTube bloquea al bot ("Sign in to confirm you're not a bot")
+
+YouTube pide esa verificación sobre todo cuando el bot corre en un hosting o VPS. La solución es darle a yt-dlp las cookies de una cuenta de YouTube.
+
+1. Usa una cuenta de Google secundaria, no la principal: YouTube puede limitar o suspender cuentas que usa un bot.
+2. Abre una ventana privada / de incógnito e inicia sesión en YouTube con esa cuenta.
+3. En esa misma pestaña ve a `https://www.youtube.com/robots.txt`.
+4. Exporta las cookies de `youtube.com` con la extensión **Get cookies.txt LOCALLY** (Chrome) o **cookies.txt** (Firefox). No uses "Get cookies.txt" sin "LOCALLY": está reportada como malware.
+5. Cierra la ventana privada sin cerrar sesión. Si vuelves a abrir esa sesión en el navegador, YouTube rota las cookies y las exportadas dejan de servir.
+6. Sube el archivo al servidor, por ejemplo como `cookies/youtube.txt`, y en el `.env` pon `YTDLP_COOKIES=cookies/youtube.txt`.
+7. Corre `npm run check`: la línea `Cookies:` debe decir `OK`.
+
+Si el bot corre en tu propio PC, en vez del archivo puedes usar `YTDLP_COOKIES_FROM_BROWSER=firefox` (con la sesión iniciada en Firefox). Con Chrome en Windows esto suele fallar; usa el archivo.
+
+El archivo de cookies no se sube al repo (`cookies/` está en el `.gitignore`). El bot nunca lo modifica: cada descarga trabaja con una copia temporal.
+
+Mientras YouTube esté bloqueando, el bot no se queda callado: busca la misma canción en SoundCloud y avisa en el chat. Durante 15 minutos (`YOUTUBE_BLOCK_COOLDOWN_MS`) va directo a SoundCloud para no hacer esperar a nadie. Las canciones que solo existen en YouTube no van a sonar hasta que pongas las cookies.
+
+Si con cookies sigue fallando, actualiza yt-dlp con `npm run setup`. Como último recurso, el proveedor de PO tokens [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) puede ayudar; sus argumentos se pasan con `YTDLP_EXTRA_ARGS`.
+
 ## Estado "Escuchando"
 
 Mientras suena algo, la presencia del bot muestra "Escuchando *canción — artista*". Si el bot tiene el permiso **Establecer estado del canal de voz**, también pone la canción como estado del canal. Se desactiva con `VOICE_CHANNEL_STATUS=false`.
@@ -62,7 +82,10 @@ Mientras suena algo, la presencia del bot muestra "Escuchando *canción — arti
 | `DISCORD_GUILD_ID`, `COMMAND_SCOPE` | | `guild`, `global` o `both` |
 | `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET` | | Opcionales, API de Spotify |
 | `YTDLP_PATH`, `FFMPEG_PATH` | `bin/yt-dlp`, ffmpeg-static | Rutas a los binarios |
-| `YTDLP_COOKIES` | | Archivo de cookies si YouTube pide "confirmar que no eres un bot" |
+| `YTDLP_COOKIES` | | Archivo cookies.txt de YouTube (ruta absoluta o relativa al proyecto) |
+| `YTDLP_COOKIES_FROM_BROWSER` | | Leer cookies del navegador (`firefox`), solo si el bot corre en tu PC |
+| `YTDLP_EXTRA_ARGS` | | Argumentos extra para yt-dlp |
+| `YOUTUBE_BLOCK_COOLDOWN_MS` | `900000` | Cuánto tiempo usar SoundCloud tras un bloqueo de YouTube |
 | `YTDLP_JS_RUNTIME` | `node:<ruta de node>` | Runtime JS que yt-dlp usa para YouTube |
 | `DEFAULT_VOLUME` | `80` | Volumen inicial |
 | `MAX_PLAYLIST_SIZE` | `100` | Máximo de canciones por playlist |
