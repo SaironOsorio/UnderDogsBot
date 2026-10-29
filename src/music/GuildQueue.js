@@ -227,7 +227,7 @@ class GuildQueue extends EventEmitter {
                 finished.failed = 'El audio terminó sin reproducirse.';
             }
 
-            const fallback = !skipped && finished.botCheck ? soundCloudFallback(finished) : null;
+            const fallback = !skipped && finished.failed && finished.youtubeFailed ? soundCloudFallback(finished) : null;
             if (fallback) {
                 this.tracks.unshift(fallback);
                 this.emit('trackFallback', finished, fallback);

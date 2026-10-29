@@ -66,7 +66,9 @@ Si el bot corre en tu propio PC, en vez del archivo puedes usar `YTDLP_COOKIES_F
 
 El archivo de cookies no se sube al repo (`cookies/` está en el `.gitignore`). El bot nunca lo modifica: cada descarga trabaja con una copia temporal.
 
-Mientras YouTube esté bloqueando, el bot no se queda callado: busca la misma canción en SoundCloud y avisa en el chat. Durante 15 minutos (`YOUTUBE_BLOCK_COOLDOWN_MS`) va directo a SoundCloud para no hacer esperar a nadie. Las canciones que solo existen en YouTube no van a sonar hasta que pongas las cookies.
+Si YouTube falla por cualquier motivo (bloqueo, video privado, sin formatos), el bot no se queda callado: busca la misma canción en SoundCloud y avisa en el chat. Durante 15 minutos (`YOUTUBE_BLOCK_COOLDOWN_MS`) va directo a SoundCloud para no hacer esperar a nadie. Las canciones que solo existen en YouTube no van a sonar hasta que pongas las cookies.
+
+Si sale **"Requested format is not available"**, el problema no son las cookies: yt-dlp no pudo resolver el reto de JavaScript de YouTube. Corre `npm run check`; la línea `JS:` debe mostrar un runtime (por ejemplo `node-22`). Si dice `none`, borra `YTDLP_JS_RUNTIME` del `.env` y corre `npm run setup`. `npm run check -- --youtube` hace una prueba real contra YouTube.
 
 Si con cookies sigue fallando, actualiza yt-dlp con `npm run setup`. Como último recurso, el proveedor de PO tokens [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) puede ayudar; sus argumentos se pasan con `YTDLP_EXTRA_ARGS`.
 
@@ -86,7 +88,7 @@ Mientras suena algo, la presencia del bot muestra "Escuchando *canción — arti
 | `YTDLP_COOKIES_FROM_BROWSER` | | Leer cookies del navegador (`firefox`), solo si el bot corre en tu PC |
 | `YTDLP_EXTRA_ARGS` | | Argumentos extra para yt-dlp |
 | `YOUTUBE_BLOCK_COOLDOWN_MS` | `900000` | Cuánto tiempo usar SoundCloud tras un bloqueo de YouTube |
-| `YTDLP_JS_RUNTIME` | `node:<ruta de node>` | Runtime JS que yt-dlp usa para YouTube |
+| `YTDLP_JS_RUNTIME` | `node:<ruta de node>` | Runtime JS que yt-dlp usa para los retos de YouTube (`deno`, `node:/ruta`, o `none`). Vacío = Node del bot |
 | `DEFAULT_VOLUME` | `80` | Volumen inicial |
 | `MAX_PLAYLIST_SIZE` | `100` | Máximo de canciones por playlist |
 | `EQ_PRESET` | `carro` | Modo de sonido por defecto: `carro`, `camion`, `pico` o `plano` |

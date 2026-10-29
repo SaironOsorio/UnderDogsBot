@@ -6,6 +6,7 @@ const { FFMPEG_PATH, YTDLP_PATH } = require('./binaries');
 
 const ROOT = path.join(__dirname, '../..');
 const BOT_CHECK_RE = /not a bot|sign in to confirm|confirm your age|LOGIN_REQUIRED/i;
+const YOUTUBE_BROKEN_RE = /requested format is not available|only images are available|n challenge|signature (?:extraction|solving)|nsig|HTTP Error 403|precondition check failed|PO token/i;
 const BLOCK_COOLDOWN_MS = Number.parseInt(process.env.YOUTUBE_BLOCK_COOLDOWN_MS || '900000', 10);
 
 let youtubeBlockedUntil = 0;
@@ -50,8 +51,9 @@ function extraArgs() {
 
 function baseArgs() {
     const args = ['--no-warnings', '--no-progress', '--ignore-config'];
-    const runtime = process.env.YTDLP_JS_RUNTIME ?? `node:${process.execPath}`;
-    if (runtime) args.push('--js-runtimes', runtime);
+    const configured = (process.env.YTDLP_JS_RUNTIME || '').trim();
+    const runtime = configured || `node:${process.execPath}`;
+    if (runtime.toLowerCase() !== 'none') args.push('--js-runtimes', runtime);
     if (FFMPEG_PATH !== 'ffmpeg') args.push('--ffmpeg-location', FFMPEG_PATH);
     args.push(...extraArgs());
     return args;
@@ -75,14 +77,23 @@ function isBotCheck(message) {
     return BOT_CHECK_RE.test(String(message || ''));
 }
 
-function markYouTubeBlocked() {
+function isYouTubeSystemFailure(message) {
+    return isBotCheck(message) || YOUTUBE_BROKEN_RE.test(String(message || ''));
+}
+
+function markYouTubeBlocked(message = '') {
     youtubeBlockedUntil = Date.now() + BLOCK_COOLDOWN_MS;
     if (!cookieWarningShown) {
         cookieWarningShown = true;
-        const status = cookieStatus();
-        console.warn(`⚠️ YouTube está pidiendo verificación ("confirm you're not a bot"). Cookies: ${status.text}.`);
-        console.warn('   Configura YTDLP_COOKIES con un cookies.txt de YouTube (ver README, sección "YouTube bloquea al bot").');
-        console.warn(`   Mientras tanto uso SoundCloud como respaldo durante ${Math.round(BLOCK_COOLDOWN_MS / 60000)} min.`);
+        const minutes = Math.round(BLOCK_COOLDOWN_MS / 60000);
+        if (isBotCheck(message)) {
+            console.warn(`⚠️ YouTube está pidiendo verificación ("confirm you're not a bot"). Cookies: ${cookieStatus().text}.`);
+            console.warn('   Configura YTDLP_COOKIES con un cookies.txt de YouTube (ver README, sección "YouTube bloquea al bot").');
+        } else {
+            console.warn(`⚠️ YouTube falló: ${message}`);
+            console.warn('   Corre "npm run check" para ver si yt-dlp tiene runtime de JavaScript y "npm run setup" para actualizarlo.');
+        }
+        console.warn(`   Mientras tanto uso SoundCloud como respaldo durante ${minutes} min.`);
     }
 }
 
@@ -91,9 +102,9 @@ function isYouTubeBlocked() {
 }
 
 function friendlyError(message) {
-    return isBotCheck(message)
-        ? 'YouTube bloqueó la descarga ("confirma que no eres un bot"). El dueño del bot debe configurar las cookies de YouTube.'
-        : message;
+    if (isBotCheck(message)) return 'YouTube bloqueó la descarga ("confirma que no eres un bot"). El dueño del bot debe configurar las cookies de YouTube.';
+    if (/requested format is not available|only images are available/i.test(message)) return 'YouTube no entregó audio para esta canción (revisa `npm run check` en el servidor).';
+    return message;
 }
 
 function runJson(args, timeoutMs = 45_000) {
@@ -118,9 +129,10 @@ function runJson(args, timeoutMs = 45_000) {
             clearTimeout(timer);
             if (code !== 0) {
                 const message = lastErrorLine(stderr) || `yt-dlp salió con código ${code}`;
-                if (isBotCheck(message)) markYouTubeBlocked();
+                const systemic = isYouTubeSystemFailure(message);
+                if (systemic) markYouTubeBlocked(message);
                 const error = new Error(friendlyError(message));
-                error.botCheck = isBotCheck(message);
+                error.botCheck = systemic;
                 return reject(error);
             }
             try {
@@ -132,11 +144,14 @@ function runJson(args, timeoutMs = 45_000) {
     });
 }
 
+const AUDIO_FORMAT = 'bestaudio[acodec=opus]/bestaudio/best/best*[acodec!=none]';
+const LIVE_FORMAT = 'bestaudio/best';
+
 function spawnAudioStream(url, { live = false } = {}) {
     return spawnYtDlp([
         '--quiet',
         '--no-playlist',
-        '-f', live ? 'bestaudio/best' : 'bestaudio[acodec=opus]/bestaudio/best',
+        '-f', live ? LIVE_FORMAT : AUDIO_FORMAT,
         '--http-chunk-size', '10M',
         '-o', '-',
         url,
@@ -148,7 +163,11 @@ module.exports = {
     spawnAudioStream,
     lastErrorLine,
     isBotCheck,
+    isYouTubeSystemFailure,
     markYouTubeBlocked,
+    baseArgs,
+    spawnYtDlp,
+    AUDIO_FORMAT,
     isYouTubeBlocked,
     friendlyError,
     cookieStatus,

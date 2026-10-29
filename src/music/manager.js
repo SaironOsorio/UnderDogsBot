@@ -99,7 +99,7 @@ function attach(queue) {
 
     queue.on('trackFallback', (track) => {
         void sendToText(queue, {
-            embeds: [ui.idleEmbed(`⚠️ YouTube bloqueó **${cleanTitle(track?.title || 'la canción')}**. La busco en SoundCloud…`)],
+            embeds: [ui.idleEmbed(`⚠️ YouTube no me dio **${cleanTitle(track?.title || 'la canción')}**. La busco en SoundCloud…`)],
         });
     });
 

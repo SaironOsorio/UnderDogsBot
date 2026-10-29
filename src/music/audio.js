@@ -1,6 +1,6 @@
 const { spawn } = require('child_process');
 const { FFMPEG_PATH } = require('./binaries');
-const { spawnAudioStream, lastErrorLine, isBotCheck, markYouTubeBlocked } = require('./ytdlp');
+const { spawnAudioStream, lastErrorLine, isYouTubeSystemFailure, markYouTubeBlocked } = require('./ytdlp');
 const { presetFilter } = require('./equalizer');
 
 const SAMPLE_RATE = Number.parseInt(process.env.FFMPEG_SAMPLE_RATE || '48000', 10);
@@ -61,9 +61,10 @@ function createPipeline(track, { eq, seekMs = 0 } = {}) {
             if (killed || !code) return;
             const message = lastErrorLine(ytdlpErrors) || `yt-dlp salió con código ${code}`;
             track.failed = message;
-            if (isBotCheck(message)) {
+            track.youtubeFailed = true;
+            if (isYouTubeSystemFailure(message)) {
                 track.botCheck = true;
-                markYouTubeBlocked();
+                markYouTubeBlocked(message);
             }
         });
     }
